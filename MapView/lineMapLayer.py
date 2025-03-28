@@ -1,10 +1,9 @@
-from kivy_garden.mapview import MapLayer, MapMarker
+from kivy_garden.mapview import *
+from kivy_garden.mapview.constants import MIN_LONGITUDE, MAX_LONGITUDE, MIN_LATITUDE, MAX_LATITUDE
+from kivy_garden.mapview.utils import clamp
 from kivy.graphics import Color, Line
 from kivy.graphics.context_instructions import Translate, Scale, PushMatrix, PopMatrix
-from kivy_garden.mapview.utils import clamp
-from kivy_garden.mapview.constants import (MIN_LONGITUDE, MAX_LONGITUDE, MIN_LATITUDE, MAX_LATITUDE)
 from math import radians, log, tan, cos, pi
-
 
 class LineMapLayer(MapLayer):
     def __init__(self, coordinates=None, color=[0, 0, 1, 1], width=2, **kwargs):

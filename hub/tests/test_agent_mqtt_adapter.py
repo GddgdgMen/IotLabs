@@ -18,7 +18,7 @@ class TestAgentMQTTAdapter(unittest.TestCase):
             topic="test_topic",
             store_gateway=self.mock_store_gateway,
             redis_client=self.mock_redis,
-            batch_size=1,
+            batch_size=5,
         )
     def test_on_message_valid_data(self):
         # Test handling of valid incoming MQTT message

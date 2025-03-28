@@ -1,43 +1,59 @@
 import json
 import logging
-import requests
+from datetime import datetime
 from typing import List
+
+import requests
 from app.entities.processed_agent_data import ProcessedAgentData
 from app.interfaces.store_gateway import StoreGateway
-from config import STORE_API_BASE_URL
+
+
+class DateTimeEncoder(json.JSONEncoder):
+    """Custom JSON encoder that knows how to handle datetime objects.
+    When it encounters a datetime, it converts it to an ISO format string."""
+
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
 
 class StoreApiAdapter(StoreGateway):
-    """
-    Adapter class for interacting with the Store API.
-    """
-
-    def __init__(self, api_base_url: str = STORE_API_BASE_URL):
+    def __init__(self, api_base_url):
         self.api_base_url = api_base_url
-        self.endpoint = f"{self.api_base_url}/processed_agent_data"
+        self.logger = logging.getLogger(__name__)
 
     def save_data(self, processed_agent_data_batch: List[ProcessedAgentData]) -> bool:
         """
-        Sends processed agent data to the Store API.
-
+        Save the processed road data to the Store API.
         Parameters:
-            processed_agent_data_batch (List[ProcessedAgentData]): 
-                The processed agent data to be saved.
-
+            processed_agent_data_batch (List[ProcessedAgentData]): List of ProcessedAgentData objects.
         Returns:
             bool: True if the data is successfully saved, False otherwise.
         """
-        if not processed_agent_data_batch:
-            logging.warning("No data to send.")
-            return False
-
-        # Convert list of ProcessedAgentData objects to dictionaries
-        payload = [data.model_dump() for data in processed_agent_data_batch]
+        url = f"{self.api_base_url}/processed_agent_data/"
+        headers = {"Content-Type": "application/json"}
 
         try:
-            response = requests.post(self.endpoint, json=payload, timeout=5)
+            # Convert the batch to a list of dictionaries
+            data = [processed_data.model_dump() for processed_data in processed_agent_data_batch]
+            # Use our custom encoder to handle datetime serialization
+            json_data = json.dumps(data, cls=DateTimeEncoder)
+
+            # Debug logging to see the serialized data
+            self.logger.debug(f"Sending data to Store API: {json_data}")
+
+        except TypeError as e:
+            self.logger.error(f"Serialization error: {e}")
+            return False
+
+        try:
+            response = requests.post(url, headers=headers, data=json_data)
             response.raise_for_status()
-            logging.info(f"Successfully sent {len(payload)} records to {self.endpoint}")
+            self.logger.info(f"Data sent to Store API. Status code: {response.status_code}")
             return True
-        except requests.RequestException as e:
-            logging.error(f"Failed to send data to Store API: {e}")
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Error sending data to Store API: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                self.logger.error(f"Response content: {e.response.content}")
             return False

@@ -18,6 +18,7 @@ class ProcessedAgentData(BaseModel):
     longitude: float
     timestamp: datetime
 
+
     @classmethod
     @field_validator("timestamp", mode="before")
     def check_timestamp(cls, value):
@@ -37,7 +38,6 @@ class Datasource:
         self.user_id = user_id
         self.connection_status = None
         self._new_points = []
-        asyncio.ensure_future(self.connect_to_server())
 
     def get_new_points(self):
         Logger.debug(self._new_points)
@@ -49,33 +49,32 @@ class Datasource:
         uri = f"ws://{STORE_HOST}:{STORE_PORT}/ws/{self.user_id}"
         while True:
             Logger.debug("CONNECT TO SERVER")
-            async with websockets.connect(uri) as websocket:
-                self.connection_status = "Connected"
-                try:
-                    while True:
-                        data = await websocket.recv()
-                        parsed_data = json.loads(data)
-                        self.handle_received_data(parsed_data)
-                except websockets.ConnectionClosedOK:
-                    self.connection_status = "Disconnected"
-                    Logger.debug("SERVER DISCONNECT")
+            try:
+                async with websockets.connect(uri) as websocket:
+                    self.connection_status = "Connected"
+                    try:
+                        while True:
+                            data = await websocket.recv()
+                            parsed_data = json.loads(data)
+                            self.handle_received_data(parsed_data)
+                    except websockets.ConnectionClosedOK:
+                        self.connection_status = "Disconnected"
+                        Logger.debug("SERVER DISCONNECT")
+                    except Exception as e:
+                        self.connection_status = "Disconnected"
+                        Logger.error(f"Error connecting to WebSocket: {e}")
+                        await asyncio.sleep(5)
+            except Exception as e:
+                Logger.error(f"Failed to connect: {e}")
+                await asyncio.sleep(5) # Reconnect delay
+
 
     def handle_received_data(self, data):
-        # Update your UI or perform actions with received data here
         Logger.debug(f"Received data: {data}")
-        processed_agent_data_list = sorted(
-            [
-                ProcessedAgentData(**processed_data_json)
-                for processed_data_json in json.loads(data)
-            ],
-            key=lambda v: v.timestamp,
+        processed_agent_data = ProcessedAgentData(**data)
+        new_point = (
+            processed_agent_data.latitude,
+            processed_agent_data.longitude,
+            processed_agent_data.road_state
         )
-        new_points = [
-            (
-                processed_agent_data.latitude,
-                processed_agent_data.longitude,
-                processed_agent_data.road_state,
-            )
-            for processed_agent_data in processed_agent_data_list
-        ]
-        self._new_points.extend(new_points)
+        self._new_points.append(new_point)

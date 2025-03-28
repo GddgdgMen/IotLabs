@@ -1,66 +1,110 @@
-from csv import DictReader
+from csv import DictReader, reader
 from datetime import datetime
+import logging
 from domain.aggregated_data import AggregatedData
 from domain.accelerometer import Accelerometer
 from domain.gps import Gps
 from domain.parking import Parking
+import config
 
 class FileDatasource:
     def __init__(self, accelerometer_filename: str, gps_filename: str, parking_filename: str, batch_size=5):
         self.accelerometer_filename = accelerometer_filename
         self.gps_filename = gps_filename
         self.parking_filename = parking_filename
+
+        self.accelerometer_file = None
+        self.gps_file = None
+        self.parking_file = None
+
+        self.accelerometer_reader = None
+        self.gps_reader = None
+        self.parking_reader = None
+
         self.batch_size = batch_size
         self.accelerometer_data = []
         self.gps_data = []
         self.parking_data = []
-        self.current_index = 0  # Для циклічного читання
-
-    def _load_csv(self, filename):
-        try:
-            with open(filename, "r") as file:
-                reader = DictReader(file)
-                return list(reader)
-        except FileNotFoundError:
-            print(f"❌ Error: File {filename} not found!")
-            return []
+        self.current_batch = []  # Для циклічного читання
 
     def startReading(self):
         """Завантажує дані з файлів у пам'ять"""
-        self.accelerometer_data = self._load_csv(self.accelerometer_filename)
-        self.gps_data = self._load_csv(self.gps_filename)
-        self.parking_data = self._load_csv(self.parking_filename)
-        self.current_index = 0  # Скидаємо індекс читання
+        self.accelerometer_file = open(self.accelerometer_filename, 'r')
+        self.gps_file = open(self.gps_filename, 'r')
+        self.parking_file = open(self.parking_filename, 'r')
+
+        self.accelerometer_reader = reader(self.accelerometer_file)
+        self.gps_reader = reader(self.gps_file)
+        self.parking_reader = reader(self.parking_file)
+        next(self.accelerometer_file, None)
+        next(self.gps_file, None)
+        next(self.parking_file, None)
+        self.current_batch = []  # Скидаємо індекс читання
 
     def stopReading(self):
         """Очистка зчитаних даних"""
-        self.accelerometer_data.clear()
-        self.gps_data.clear()
-        self.parking_data.clear()
+        self.accelerometer_file.close()
+        self.gps_file.close()
+        self.parking_file.close()
+
+        self.accelerometer_data = []
+        self.gps_data = []
+        self.parking_data = []
+
+        self.current_batch = []
+
+    def _reset_readers(self) -> None:
+        """Resets accelerometer, GPS and air quality file pointers"""
+        self.accelerometer_file.seek(0)
+        self.gps_file.seek(0)
+        self.parking_file.seek(0)
+        
+        next(self.accelerometer_reader, None)
+        next(self.gps_reader, None)
+        next(self.parking_reader, None)
+
 
     def read(self):
-        """Зчитує batch_size записів і повертає список AggregatedData"""
-        batch = []
-        for _ in range(self.batch_size):
-            if not self.accelerometer_data or not self.gps_data or not self.parking_data:
-                return []
+        
+        if not self.current_batch:
+            for _ in range(self.batch_size):
+                try:
+                    acc_data = next(self.accelerometer_reader)
+                    gps_data = next(self.gps_reader)
+                    parking_data =  next(self.parking_reader)
+                except StopIteration:
+                    self._reset_readers()
+                    continue
+                accelerometer = Accelerometer(
+                    x=int(acc_data[0]),
+                    y=int(acc_data[1]),
+                    z=int(acc_data[2])
+                )
 
-            acc = self.accelerometer_data[self.current_index % len(self.accelerometer_data)]
-            gps = self.gps_data[self.current_index % len(self.gps_data)]
-            park = self.parking_data[self.current_index % len(self.parking_data)]
+                gps = Gps(
+                    latitude=float(gps_data[0]),
+                    longitude=float(gps_data[1])
+                )
 
-            accelerometer = Accelerometer(int(acc["x"]), int(acc["y"]), int(acc["z"]))
-            gps = Gps(float(gps["longitude"]), float(gps["latitude"]))
-            parking = Parking(int(park["empty_count"]), gps)  # GPS додаємо до паркінгу
+                parking_gps = Gps(
+                    latitude=float(parking_data[1]),
+                    longitude=float(parking_data[2])
+                )
 
-            aggregated_data = AggregatedData(
-                accelerometer=accelerometer,
-                gps=gps,
-                parking=parking,
-                time=datetime.fromisoformat(park["timestamp"]),
-            )
+                parking = Parking(
+                    empty_count=int(parking_data[0]),
+                    gps=parking_gps
+                )
 
-            batch.append(aggregated_data)
-            self.current_index += 1  # Рухаємось вперед, циклічно
+                aggregated_data = AggregatedData(
+                    accelerometer=accelerometer,
+                    gps=gps,
+                    timestamp=datetime.now(),
+                    user_id=config.USER_ID,
+                    parking_slots=parking.empty_count
+                )
 
-        return batch
+                self.current_batch.append([aggregated_data, parking])
+                
+        return self.current_batch.pop(0) if self.current_batch else None
+        

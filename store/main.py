@@ -1,112 +1,23 @@
-import asyncio
-import json
-from typing import Set, Dict, List, Any
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Body, Depends
-from sqlalchemy import (
-    create_engine,
-    MetaData,
-    Table,
-    Column,
-    Integer,
-    String,
-    Float,
-    DateTime,
-)
-from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.sql import select
-from datetime import datetime
-from pydantic import BaseModel, field_validator
-from config import (
-    POSTGRES_HOST,
-    POSTGRES_PORT,
-    POSTGRES_DB,
-    POSTGRES_USER,
-    POSTGRES_PASSWORD,
-)
+from typing import Set, Dict, List
 
-# FastAPI app setup
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+
+from crud import (
+    create_processed_data,
+    get_processed_data,
+    get_all_processed_data,
+    update_processed_data,
+    delete_processed_data,
+)
+from database import SessionLocal
+from models import ProcessedAgentData, ProcessedAgentDataInDB
+
 app = FastAPI()
-# SQLAlchemy setup
-DATABASE_URL = f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-engine = create_engine(DATABASE_URL)
-metadata = MetaData()
-# Define the ProcessedAgentData table
-processed_agent_data = Table(
-    "processed_agent_data",
-    metadata,
-    Column("id", Integer, primary_key=True, index=True),
-    Column("road_state", String),
-    Column("user_id", Integer),
-    Column("x", Float),
-    Column("y", Float),
-    Column("z", Float),
-    Column("latitude", Float),
-    Column("longitude", Float),
-    Column("timestamp", DateTime),
-)
-SessionLocal = sessionmaker(bind=engine)
-
-def get_db():
-    db = SessionLocal()  # Create a new session using the sessionmaker
-    try:
-        yield db  # Return the session to be used in the route
-    finally:
-        db.close()
-
-# SQLAlchemy model
-class ProcessedAgentDataInDB(BaseModel):
-    id: int
-    road_state: str
-    user_id: int
-    x: float
-    y: float
-    z: float
-    latitude: float
-    longitude: float
-    timestamp: datetime
-
-
-# FastAPI models
-class AccelerometerData(BaseModel):
-    x: float
-    y: float
-    z: float
-
-
-class GpsData(BaseModel):
-    latitude: float
-    longitude: float
-
-
-class AgentData(BaseModel):
-    user_id: int
-    accelerometer: AccelerometerData
-    gps: GpsData
-    timestamp: datetime
-
-    @classmethod
-    @field_validator("timestamp", mode="before")
-    def check_timestamp(cls, value):
-        if isinstance(value, datetime):
-            return value
-        try:
-            return datetime.fromisoformat(value)
-        except (TypeError, ValueError):
-            raise ValueError(
-                "Invalid timestamp format. Expected ISO 8601 format (YYYY-MM-DDTHH:MM:SSZ)."
-            )
-
-
-class ProcessedAgentData(BaseModel):
-    road_state: str
-    agent_data: AgentData
-
 
 # WebSocket subscriptions
 subscriptions: Dict[int, Set[WebSocket]] = {}
 
 
-# FastAPI WebSocket endpoint
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: int):
     await websocket.accept()
@@ -120,67 +31,63 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
         subscriptions[user_id].remove(websocket)
 
 
-# Function to send data to subscribed users
-async def send_data_to_subscribers(user_id: int, data):
+async def send_data_to_subscribers(user_id: int, data: ProcessedAgentDataInDB):
     if user_id in subscriptions:
         for websocket in subscriptions[user_id]:
-            await websocket.send_json(json.dumps(data))
+            try:
+                data_dict = data.model_dump()
+                data_dict['timestamp'] = data_dict['timestamp'].isoformat()
+                await websocket.send_json(data_dict)
+            except WebSocketDisconnect:
+                subscriptions[user_id].remove(websocket)
+            except Exception as e:
+                print(f"Error sending data to websocket: {e}")
+                continue
 
 
-# FastAPI CRUDL endpoints
+@app.post("/processed_agent_data/", response_model=List[ProcessedAgentDataInDB])
+async def create_processed_agent_data(data: List[ProcessedAgentData]):
+    db = SessionLocal()
+    try:
+        result = create_processed_data(db, data)
+        for item in result:
+            await send_data_to_subscribers(item.user_id, item)
+        return result
+    finally:
+        db.close()
 
-
-@app.post("/processed_agent_data/", response_model=ProcessedAgentDataInDB)
-async def create_processed_agent_data(data: ProcessedAgentData, db: Session = Depends(get_db)):
-    db_item = processed_agent_data.insert().values(
-        road_state=data.road_state,
-        x=data.agent_data.accelerometer.x,
-        y=data.agent_data.accelerometer.y,
-        z=data.agent_data.accelerometer.z,
-        latitude=data.agent_data.gps.latitude,
-        longitude=data.agent_data.gps.longitude,
-        timestamp=data.timestamp
-    )
-    db.execute(db_item)
-    db.commit()
-    return data
 
 @app.get("/processed_agent_data/{processed_agent_data_id}", response_model=ProcessedAgentDataInDB)
-def read_processed_agent_data(processed_agent_data_id: int, db: Session = Depends(get_db)):
-    return db.execute(select(processed_agent_data).where(processed_agent_data.c.id == processed_agent_data_id)).first()
+def read_processed_agent_data(processed_agent_data_id: int):
+    db = SessionLocal()
+    try:
+        return get_processed_data(db, processed_agent_data_id)
+    finally:
+        db.close()
+
 
 @app.get("/processed_agent_data/", response_model=List[ProcessedAgentDataInDB])
-def list_processed_agent_data(db: Session = Depends(get_db)):
-    return db.execute(select(processed_agent_data)).fetchall()
+def list_processed_agent_data():
+    db = SessionLocal()
+    try:
+        return get_all_processed_data(db)
+    finally:
+        db.close()
+
 
 @app.put("/processed_agent_data/{processed_agent_data_id}", response_model=ProcessedAgentDataInDB)
-def update_processed_agent_data(processed_agent_data_id: int, data: ProcessedAgentData, db: Session = Depends(get_db)):
-    db.execute(
-        update(processed_agent_data)
-        .where(processed_agent_data.c.id == processed_agent_data_id)
-        .values(
-            road_state=data.road_state,
-            x=data.agent_data.accelerometer.x,
-            y=data.agent_data.accelerometer.y,
-            z=data.agent_data.accelerometer.z,
-            latitude=data.agent_data.gps.latitude,
-            longitude=data.agent_data.gps.longitude,
-            timestamp=data.timestamp
-        )
-    )
-    db.commit()
-    return data
-
-@app.delete("/processed_agent_data/{processed_agent_data_id}")
-def delete_processed_agent_data(processed_agent_data_id: int, db: Session = Depends(get_db)):
-    db.execute(delete(processed_agent_data).where(processed_agent_data.c.id == processed_agent_data_id))
-    db.commit()
-    return {"message": "Deleted successfully"}
+def update_processed_agent_data(processed_agent_data_id: int, data: ProcessedAgentData):
+    db = SessionLocal()
+    try:
+        return update_processed_data(db, processed_agent_data_id, data)
+    finally:
+        db.close()
 
 
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+@app.delete("/processed_agent_data/{processed_agent_data_id}", response_model=ProcessedAgentDataInDB)
+def delete_processed_agent_data(processed_agent_data_id: int):
+    db = SessionLocal()
+    try:
+        return delete_processed_data(db, processed_agent_data_id)
+    finally:
+        db.close()
