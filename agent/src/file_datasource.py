@@ -63,6 +63,18 @@ class FileDatasource:
         next(self.gps_reader, None)
         next(self.parking_reader, None)
 
+    def _reset_accelerometer_reader(self) -> None:
+        self.accelerometer_file.seek(0)
+        next(self.accelerometer_reader, None)
+
+    def _reset_parking_reader(self) -> None:
+        self.parking_file.seek(0)
+        next(self.parking_reader, None)
+
+    def _reset_gps_reader(self) -> None:
+        self.gps_file.seek(0)
+        next(self.gps_reader, None)
+
 
     def read(self):
         
@@ -70,10 +82,16 @@ class FileDatasource:
             for _ in range(self.batch_size):
                 try:
                     acc_data = next(self.accelerometer_reader)
+                except StopIteration:
+                    self._reset_accelerometer_reader()
+                try:
                     gps_data = next(self.gps_reader)
+                except StopIteration:
+                    self._reset_gps_reader()
+                try:
                     parking_data =  next(self.parking_reader)
                 except StopIteration:
-                    self._reset_readers()
+                    self._reset_parking_reader()
                     continue
                 accelerometer = Accelerometer(
                     x=int(acc_data[0]),
